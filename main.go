@@ -31,6 +31,19 @@ type file struct {
 }
 
 func run() error {
+	if len(os.Args) == 3 && os.Args[1] == "hash" {
+		rawData, err := os.ReadFile(os.Args[2])
+		if err != nil {
+			return err
+		}
+
+		hash, err := getOpenSSLHash(rawData)
+		if err != nil {
+			return err
+		}
+		fmt.Println(hash)
+		return nil
+	}
 	if len(os.Args) < 4 {
 		return fmt.Errorf("missing arguments")
 	}
