@@ -9,13 +9,17 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/daemon"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/stream"
+	"github.com/pavlo-v-chernykh/keystore-go/v4"
 )
 
 func main() {
@@ -49,6 +53,8 @@ func run() error {
 	}
 
 	logs.Progress.SetOutput(os.Stderr)
+
+	// read CA file to add
 	caFile, err := os.ReadFile(os.Args[3])
 	if err != nil {
 		return err
@@ -75,20 +81,27 @@ func run() error {
 	}
 	dstShaRef := dstRef.Context().Digest(digest.String())
 
+	log.Printf("use tag '%s'", digest.String())
+	var tag name.Tag = dstShaRef.Tag("tmp")
 	log.Print("sync image to", dstShaRef.String())
-	err = remote.Write(dstShaRef, srcImg)
+	id, err := daemon.Write(tag, srcImg)
+	//err = remote.Write(dstShaRef, srcImg)
 	if err != nil {
 		return err
 	}
+	log.Printf("written id '%s'", id)
 
-	dstShaImg, err := remote.Image(dstShaRef)
+	//dstShaImg, err := remote.Image(dstShaRef)
+	dstShaImg, err := daemon.Image(tag)
 	if err != nil {
 		return err
 	}
 
 	log.Print("prepare CA")
 
-	files := map[string]file{}
+	files := map[string]*file{}
+
+	jksKeyStores := map[string]*file{}
 
 	// TODO:
 	//  - links not handled
@@ -99,17 +112,69 @@ func run() error {
 			path = "/" + path
 		}
 
-		if hdr.Typeflag != tar.TypeReg {
-			return nil
-		}
-		if isTruststore(path) {
-			content, err := io.ReadAll(r)
-			if err != nil {
-				return err
+		if f, ok := files[path]; ok && f == nil {
+			if hdr.Typeflag != tar.TypeReg {
+				log.Printf("remembered file is not regular: %s", path)
+			} else {
+				content, err := io.ReadAll(r)
+				if err != nil {
+					return err
+				}
+				files[path] = &file{
+					content: content,
+					hdr:     hdr,
+				}
 			}
-			files[path] = file{
-				content: content,
-				hdr:     hdr,
+		}
+		if f, ok := jksKeyStores[path]; ok && f == nil {
+			if hdr.Typeflag != tar.TypeReg {
+				log.Printf("remembered jks is not regular: %s", path)
+			} else {
+				content, err := io.ReadAll(r)
+				if err != nil {
+					return err
+				}
+				jksKeyStores[path] = &file{
+					content: content,
+					hdr:     hdr,
+				}
+			}
+		}
+
+		if isTruststore(path) {
+			if hdr.Typeflag == tar.TypeSymlink {
+				realLocation := hdr.Linkname
+				log.Printf("remember %s %s to read", path, realLocation)
+				files[path] = nil
+			} else if hdr.Typeflag == tar.TypeReg {
+				content, err := io.ReadAll(r)
+				if err != nil {
+					return err
+				}
+				files[path] = &file{
+					content: content,
+					hdr:     hdr,
+				}
+			} else {
+				log.Printf("matched file not supported %s %b", path, hdr.Typeflag)
+			}
+		}
+		if strings.HasSuffix(path, "lib/security/cacerts") {
+			if hdr.Typeflag == tar.TypeSymlink {
+				realLocation := hdr.Linkname
+				log.Printf("remember %s %s to read", path, realLocation)
+				jksKeyStores[path] = nil
+			} else if hdr.Typeflag == tar.TypeReg {
+				content, err := io.ReadAll(r)
+				if err != nil {
+					return err
+				}
+				jksKeyStores[path] = &file{
+					content: content,
+					hdr:     hdr,
+				}
+			} else {
+				log.Printf("matched file not supported %s %b", path, hdr.Typeflag)
 			}
 		}
 		return nil
@@ -119,8 +184,26 @@ func run() error {
 	}
 
 	layers := []v1.Layer{}
-	for _, file := range files {
+	for path, file := range files {
+		log.Printf("prepare new ca pem file %s", path)
+		if file == nil {
+			log.Printf("file %s was not read", path)
+			continue
+		}
 		layers = append(layers, newLayerWithCA(file, caFile))
+	}
+
+	for path, jksKeyStore := range jksKeyStores {
+		log.Printf("prepare new jks file %s", path)
+		if jksKeyStore == nil {
+			log.Printf("file %s was not read", path)
+			continue
+		}
+		layer, err := newLayerWithJKS(jksKeyStore, caFile)
+		if err != nil {
+			return err
+		}
+		layers = append(layers, layer)
 	}
 
 	newImg, err := mutate.AppendLayers(dstShaImg, layers...)
@@ -128,11 +211,47 @@ func run() error {
 		return err
 	}
 
-	remote.Write(dstRef, newImg)
+	target := dstRef.Context().Tag(dstRef.Identifier())
+	log.Printf("Write to %s", target)
+	daemon.Write(target, newImg)
 	return nil
 }
 
-func newLayerWithCA(file file, caFile []byte) v1.Layer {
+func newLayerWithJKS(file *file, caFile []byte) (v1.Layer, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	ks := keystore.New()
+	err := ks.Load(bytes.NewBuffer(file.content), []byte("changeit"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load java key store: %w", err)
+	}
+
+	err = ks.SetTrustedCertificateEntry("ouralias", keystore.TrustedCertificateEntry{
+		CreationTime: time.Now(),
+		Certificate: keystore.Certificate{
+			Type:    "X509",
+			Content: caFile,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	newJKS := &bytes.Buffer{}
+	err = ks.Store(newJKS, []byte("changeit"))
+	if err != nil {
+		return nil, err
+	}
+
+	newHdr := *file.hdr
+	newHdr.Size = int64(newJKS.Len())
+	tw.WriteHeader(&newHdr)
+	tw.Write(newJKS.Bytes())
+	return stream.NewLayer(io.NopCloser(&buf)), nil
+}
+
+func newLayerWithCA(file *file, caFile []byte) v1.Layer {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	newTrustStore := append(file.content, caFile...)
@@ -153,12 +272,23 @@ func printFn(_ string, hdr *tar.Header, _ io.Reader) error {
 }
 
 func walkFiles(img v1.Image, walkFn func(layerDigest string, h *tar.Header, r io.Reader) error) error {
+	// layers, err := img.Layers()
+	// if err != nil {
+	// 	return err
+	// }
+	// for i := len(layers) - 1; i >= 0; i-- {
+	// 	layer := layers[i]
+	// 	err = walkLayerFiles(layer, walkFn)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 	layers, err := img.Layers()
 	if err != nil {
 		return err
 	}
-	for i := len(layers) - 1; i >= 0; i-- {
-		layer := layers[i]
+	log.Println("walk %d layers", len(layers))
+	for _, layer := range layers {
 		err = walkLayerFiles(layer, walkFn)
 		if err != nil {
 			return err
