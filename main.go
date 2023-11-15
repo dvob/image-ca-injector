@@ -34,6 +34,11 @@ func run() error {
 	flag.StringVar(&opts.srcType, "src", opts.srcType, "source type (remote, docker, tar)")
 	flag.StringVar(&opts.dstType, "dst", opts.dstType, "destination type (remote, docker, tar)")
 
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s SOURCE DESTINATION CA_FILE:\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+
 	flag.Parse()
 
 	if flag.NArg() < 3 {
