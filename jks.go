@@ -22,7 +22,7 @@ func patchJKSTruststore(pem []byte) patchFn {
 			}
 			hdr, ok := i.resolve(path)
 			if !ok {
-				slog.Info("cant resolve %s", path)
+				slog.Info("cant resolve link", "path", path)
 				continue
 			}
 			truststores[hdr.Name] = hdr
