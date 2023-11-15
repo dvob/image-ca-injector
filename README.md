@@ -1,17 +1,21 @@
 # image-ca-injector
 
 The image-ca-injector copies a image from a source registry into a destination registry and adds a CA to the system truststore.
+```
+image-ca-injector alpine registry.mycompany.com/alpine your_company_ca.crt
+```
 
 For this it performs the follwing steps:
-* Copy the image to the destination repository
-* Find truststore files (based on [root_linux.go](https://github.com/golang/go/blob/c05fceb73cafd642d26660148357a4f60172aa1a/src/crypto/x509/root_linux.go))
+* Download the image into a local temporary tar file
+* Find PEM truststore files (based on [root_linux.go](https://github.com/golang/go/blob/c05fceb73cafd642d26660148357a4f60172aa1a/src/crypto/x509/root_linux.go)) and add the specified CA to it.
   * Debian/Ubuntu/Gentoo etc.: `/etc/ssl/certs/ca-certificates.crt`
   * Fedora/RHEL 6: `/etc/pki/tls/certs/ca-bundle.crt`
   * OpenSUSE: `/etc/ssl/ca-bundle.pem`
   * OpenELEC: `/etc/pki/tls/cacert.pem`
   * CentOS/RHEL 7: `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
   * Alpine Linux: `/etc/ssl/cert.pem`
-* If one of these files are found create a new layer which adds our own CA to the truststore.
+* Find JKS truststore files (`*/lib/security/cacerts`) and add the specified CA to it.
+* Upload the image to destination
 
 ## Install
 ```
@@ -43,7 +47,4 @@ eNR2QnBwV13+5KYhcyQ=
 ```
 
 ## Caveats
-* Links are not handeld: If the truststore file is a link the CA is not added
-* [Directories](https://github.com/golang/go/blob/c05fceb73cafd642d26660148357a4f60172aa1a/src/crypto/x509/root_linux.go#L18) are not handled
 * If you use system tools (e.g. `update-ca-certificates`) to update the truststore after image-ca-injector ran its likely that the added certificate gets removed
-* Image gets downloaded twice. First from source to upload it to the destination and then from the destination to inspect the files in the image to find the truststores. Maybe this could be improved (see `image_interceptor.go`) but it would also get complicated for cases where certain layers are already available.
