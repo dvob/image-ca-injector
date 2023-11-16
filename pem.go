@@ -56,6 +56,9 @@ var customCertLocations = map[string]string{
 
 var distroPathes = map[string]string{
 	"alpine": "/usr/local/share/ca-certificates",
+	"debian": "/usr/local/share/ca-certificates",
+	"ubuntu": "/usr/local/share/ca-certificates",
+	// TODO: extend with other vendors
 }
 
 func putPEMTruststore(name string, pem []byte) patchFn {
@@ -99,6 +102,7 @@ func putPEMTruststore(name string, pem []byte) patchFn {
 
 		osInfo := getOSInfo(i)
 		if osInfo == nil {
+			slog.Info("no pem truststores found and no OS detected")
 			return layers, nil
 		}
 
