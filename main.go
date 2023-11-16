@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
@@ -81,8 +82,11 @@ func injectCA(opts *opts) error {
 	}
 	defer image.close()
 
+	fileName := filepath.Base(opts.caFile)
+
 	patch := chainPatchFns(
 		patchPEMTruststore(caPEM),
+		putPEMTruststore(fileName, caPEM),
 		patchJKSTruststore(caPEM),
 	)
 
