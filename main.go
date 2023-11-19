@@ -87,7 +87,7 @@ func injectCA(opts *opts) error {
 	patch := chainPatchFns(
 		patchPEMTruststore(caPEM),
 		putPEMTruststore(fileName, caPEM),
-		patchJKSTruststore(caPEM),
+		patchJKSTruststore(fileName, caPEM),
 	)
 
 	slog.Info("prepare truststore patches")
