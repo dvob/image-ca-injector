@@ -142,8 +142,12 @@ func (i *image) getMeta(path string) (*tar.Header, bool) {
 }
 
 func (i *image) open(path string) (io.ReadCloser, error) {
+	file, ok := i.resolve(path)
+	if !ok {
+		return nil, fmt.Errorf("could not resolve link '%s'", path)
+	}
 	rc := mutate.Extract(i.tmpImage)
-	return newTarFileReader(path, rc)
+	return newTarFileReader(file.Name, rc)
 }
 
 func (i *image) close() error {
@@ -176,6 +180,10 @@ func newTarFileReader(path string, readCloser io.ReadCloser) (*tarFileReader, er
 		}
 
 		if f.Name == path {
+			if f.Typeflag != tar.TypeReg {
+				readCloser.Close()
+				return nil, fmt.Errorf("path %s is not a regular file", path)
+			}
 			found = true
 			break
 		}
