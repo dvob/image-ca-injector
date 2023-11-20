@@ -14,6 +14,11 @@ For this it performs the follwing steps:
   * OpenELEC: `/etc/pki/tls/cacert.pem`
   * CentOS/RHEL 7: `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
   * Alpine Linux: `/etc/ssl/cert.pem`
+* Look for common places for custom CAs and put the CA there:
+  * `/usr/local/share/ca-certificates/`
+  * `/etc/pki/ca-trust/source/anchors/`
+  * `/etc/ca-certificates/trust-source/anchors/`
+  * `/usr/share/pki/trust/anchors/`
 * Find JKS truststore files (`*/lib/security/cacerts`) and add the specified CA to it.
 * Upload the image to destination
 
@@ -45,6 +50,3 @@ sX9bA4D6j7clcKIZnH3UZT7EZ6bzLYEHinnncgIgTVdSzkDeRPbTDF/EyTTVg/tS
 eNR2QnBwV13+5KYhcyQ=
 -----END CERTIFICATE-----
 ```
-
-## Caveats
-* If you use system tools (e.g. `update-ca-certificates`) to update the truststore after image-ca-injector ran its likely that the added certificate gets removed
