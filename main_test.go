@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dvob/pcert"
 	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 )
 
 func TestAddCA(t *testing.T) {
@@ -171,60 +175,231 @@ func TestAddCA(t *testing.T) {
 	caCertFile := filepath.Join(testCertDir, "myca.crt")
 
 	t.Run("alpine", func(t *testing.T) {
-		err := injectCA(&opts{
+		pull(t, pool.Client, "alpine", "latest")
+
+		err = injectCA(&opts{
 			src:     "alpine",
 			dst:     "myalpine",
-			srcType: "remote",
+			srcType: "docker",
 			dstType: "docker",
 			caFile:  caCertFile,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		resource, err := pool.RunWithOptions(&dockertest.RunOptions{
-			Repository: "myalpine",
-			NetworkID:  network.Network.ID,
-			Cmd: []string{
-				"wget",
-				"https://test.example.com",
-			},
-			Name: "image-ca-injector-test-alpine",
+
+		t.Run("base", func(t *testing.T) {
+			cleanup := dockerRun(t, pool, &dockertest.RunOptions{
+				Repository: "myalpine",
+				NetworkID:  network.Network.ID,
+				Cmd: []string{
+					"wget",
+					"https://test.example.com",
+				},
+				Name: "image-ca-injector-test-alpine-base",
+			})
+			t.Cleanup(cleanup)
+		})
+		t.Run("curl", func(t *testing.T) {
+			cleanup := dockerRun(t, pool, &dockertest.RunOptions{
+				Repository: "myalpine",
+				NetworkID:  network.Network.ID,
+				Cmd: []string{
+					"sh",
+					"-c",
+					`
+					set -o errexit
+					apk add curl
+					curl -v https://test.example.com
+					`,
+				},
+				Name: "image-ca-injector-test-alpine-curl",
+			})
+			t.Cleanup(cleanup)
+		})
+	})
+	t.Run("debian", func(t *testing.T) {
+		pull(t, pool.Client, "debian", "latest")
+
+		err = injectCA(&opts{
+			src:     "debian",
+			dst:     "mydebian",
+			srcType: "docker",
+			dstType: "docker",
+			caFile:  caCertFile,
 		})
 		if err != nil {
-			log.Fatalf("Could not start resource: %s", err)
+			t.Fatal(err)
 		}
 
-		cleanup := func() {
-			if skipCleanup {
-				return
-			}
-			if err := pool.Purge(resource); err != nil {
-				t.Logf("Could not purge resource: %s", err)
-			}
-		}
-
-		defer cleanup()
-
-		c := resource.Container
-		if err := pool.Retry(func() error {
-			r, _ := pool.ContainerByName(resource.Container.Name)
-			if r == nil {
-				return fmt.Errorf("could not get container with name %s", resource.Container.Name)
-			}
-			c = r.Container
-			if c.State.Running {
-				return fmt.Errorf("container still running")
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("container did not finish: %s", err)
-		}
-		if c.State.ExitCode != 0 {
-			t.Fatal("command in alpine container was not successful")
-		}
+		t.Run("curl", func(t *testing.T) {
+			cleanup := dockerRun(t, pool, &dockertest.RunOptions{
+				Repository: "mydebian",
+				NetworkID:  network.Network.ID,
+				Cmd: []string{
+					"sh",
+					"-c",
+					`
+					set -o errexit
+					apt-get update
+					apt-get install -y curl
+					curl -v https://test.example.com
+					`,
+				},
+				Name: "image-ca-injector-test-debian-curl",
+			})
+			t.Cleanup(cleanup)
+		})
 	})
+	t.Run("ubuntu", func(t *testing.T) {
+		pull(t, pool.Client, "ubuntu", "latest")
 
+		err = injectCA(&opts{
+			src:     "ubuntu",
+			dst:     "myubuntu",
+			srcType: "docker",
+			dstType: "docker",
+			caFile:  caCertFile,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		t.Run("curl", func(t *testing.T) {
+			cleanup := dockerRun(t, pool, &dockertest.RunOptions{
+				Repository: "myubuntu",
+				NetworkID:  network.Network.ID,
+				Cmd: []string{
+					"sh",
+					"-c",
+					`
+					set -o errexit
+					apt-get update
+					apt-get install -y curl
+					curl -v https://test.example.com
+					`,
+				},
+				Name: "image-ca-injector-test-ubuntu-curl",
+			})
+			t.Cleanup(cleanup)
+		})
+	})
+	for _, v := range []string{"8", "9"} {
+		v := v
+		t.Run("rockylinux:"+v, func(t *testing.T) {
+			pull(t, pool.Client, "rockylinux", v)
+
+			err = injectCA(&opts{
+				src:     "rockylinux:" + v,
+				dst:     "myrockylinux:" + v,
+				srcType: "docker",
+				dstType: "docker",
+				caFile:  caCertFile,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			t.Run("curl", func(t *testing.T) {
+				cleanup := dockerRun(t, pool, &dockertest.RunOptions{
+					Repository: "myrockylinux",
+					Tag:        v,
+					NetworkID:  network.Network.ID,
+					Cmd: []string{
+						"sh",
+						"-c",
+						`curl -v https://test.example.com
+						`,
+					},
+					Name: "image-ca-injector-test-rocklinux" + v + "-curl",
+				})
+				t.Cleanup(cleanup)
+			})
+			t.Run("openssl", func(t *testing.T) {
+				cleanup := dockerRun(t, pool, &dockertest.RunOptions{
+					Repository: "myrockylinux",
+					Tag:        v,
+					NetworkID:  network.Network.ID,
+					Cmd: []string{
+						"sh",
+						"-c",
+						`yum install -y openssl
+						echo '' | openssl s_client -connect test.example.com:443
+						`,
+					},
+					Name: "image-ca-injector-test-rockylinux" + v + "-openssl",
+				})
+				t.Cleanup(cleanup)
+			})
+		})
+	}
 	t.Run("openjdk", func(t *testing.T) {
 		t.Skip()
 	})
+}
+
+func pull(t *testing.T, c *docker.Client, repository string, tag string) {
+	t.Helper()
+	t.Logf("pull %s:%s", repository, tag)
+	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
+	t.Cleanup(cancelFn)
+	err := c.PullImage(docker.PullImageOptions{
+		Repository: "alpine",
+		Tag:        "latest",
+		Context:    ctx,
+	}, docker.AuthConfiguration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func dockerRun(t *testing.T, p *dockertest.Pool, config *dockertest.RunOptions) func() {
+	resource, err := p.RunWithOptions(config)
+	cleanup := func() {
+		if err := p.Purge(resource); err != nil {
+			t.Logf("Could not purge container '%s': %s", config.Name, err)
+		}
+	}
+	if err != nil {
+		t.Fatalf("failed to run container %s: %s", config.Name, err)
+		return cleanup
+	}
+
+	c := resource.Container
+	exitCode, err := p.Client.WaitContainerWithContext(resource.Container.ID, context.Background())
+	if err != nil {
+		t.Fatalf("failed to wait on container '%s': %s", resource.Container.ID, err)
+	}
+
+	if exitCode == 0 {
+		if _, ok := os.LookupEnv("SHOW_LOG"); ok {
+			err = p.Client.Logs(docker.LogsOptions{
+				Container:    c.ID,
+				OutputStream: os.Stderr,
+				ErrorStream:  os.Stderr,
+				Stdout:       true,
+				Stderr:       true,
+			})
+			if err != nil {
+				t.Logf("failed to show log: %s", err)
+			}
+		}
+		return cleanup
+	}
+
+	logOut := &bytes.Buffer{}
+	err = p.Client.Logs(docker.LogsOptions{
+		Container:    c.ID,
+		OutputStream: logOut,
+		ErrorStream:  logOut,
+		Stdout:       true,
+		Stderr:       true,
+	})
+	if err != nil {
+		t.Fatalf("container '%s' exited with code %d. failed to get logs:", resource.Container.ID, err)
+		return cleanup
+	} else {
+		t.Fatalf("container '%s' exited with code %d. output: '%s'", resource.Container.ID, exitCode, logOut.String())
+		return cleanup
+	}
 }
